@@ -1,111 +1,380 @@
 # Placement Assistant Agent
 
-A local, tool-using campus-placement assistant. It chats through Ollama, uses Google Sheets as the single source of truth for personal placement records, uses Tavily only for current company research, and creates editable email drafts without sending mail.
+A local, tool-using campus-placement assistant that helps students track applications and deadlines, research companies, prepare emails, and analyze resumes or job descriptions.
+
+The application uses **Ollama for local LLM inference**, **Google Sheets as the single source of truth for personal placement records**, and **Tavily only for current company research**. Email drafts are generated locally and are never sent automatically.
+
+## Features
+
+* 📋 **Application tracking** — create and update placement applications in Google Sheets.
+* ⏰ **Deadline tracking** — check upcoming placement deadlines with optional company, role, and stage filters.
+* 🔎 **Company research** — retrieve recent interview-process reports using Tavily.
+* ✉️ **Email drafting** — generate editable follow-up, thank-you, or application emails without sending them.
+* 📄 **Resume and job-description analysis** — analyze uploaded PDF/image documents for role fit, resume improvements, and interview preparation.
+* 📅 **Relative date handling** — understands dates such as `today`, `tomorrow`, and `next Monday`.
+* 🔒 **Local-first architecture** — Ollama handles LLM inference locally; personal placement records remain in Google Sheets.
 
 ## Architecture
 
 ```text
-User → Streamlit → FastAPI → Ollama agent → Python tool → Storage layer → Google Sheets
-                                                ├── Tavily (company research)
-                                                └── Ollama (email drafts)
+User
+  │
+  ▼
+Streamlit Frontend
+  │
+  ▼
+FastAPI Backend
+  │
+  ▼
+Ollama Agent
+  │
+  ├── check_deadlines ────────► Google Sheets
+  │
+  ├── log_application ────────► Google Sheets
+  │
+  ├── research_company ───────► Tavily
+  │
+  └── draft_email ────────────► Ollama
 ```
 
-The agent in `backend/agent.py` decides which of the four tools to call. Tools never contain raw Google API calls; `backend/sheets.py` is the only Sheets storage boundary. This prevents the model from inventing or directly modifying personal placement data.
+The agent in `backend/agent.py` decides which tool to call.
+
+Tools do not contain raw Google API calls. `backend/sheets.py` is the only Google Sheets storage boundary. This keeps personal placement data behind a controlled storage layer and prevents the model from directly inventing or modifying tracker data.
 
 ## Tools
 
-- `check_deadlines`: reads active personal deadlines from Google Sheets, with optional company, role, and stage filters.
-- `research_company`: retrieves recent interview-process reports from Tavily. These are web sources, not personal tracker data.
-- `draft_email`: creates an editable follow-up, thank-you, or application email locally with Ollama. It never sends an email.
-- `log_application`: creates or updates an application/opportunity and optionally its linked deadline.
+### `check_deadlines`
 
-The agent resolves relative dates such as `today`, `tomorrow`, and `next Monday` against the real system date. An announcement is stored as `Not Applied` only when it has sufficient structured details; it never implies the student applied.
+Reads active personal deadlines from Google Sheets.
 
-## Google Sheets tracker
+Supports optional filters for:
 
-Create one spreadsheet and share it with the service-account email as an **Editor**. The app creates these tabs and header rows automatically if they do not already exist.
+* Company
+* Role
+* Stage
 
-`Applications` columns:
+### `research_company`
+
+Uses Tavily to retrieve recent web reports about company interview processes.
+
+These are external web sources and are **not** treated as personal placement-tracker data.
+
+### `draft_email`
+
+Uses Ollama to create editable:
+
+* Follow-up emails
+* Thank-you emails
+* Application emails
+
+The tool only creates a draft. **It never sends email.**
+
+### `log_application`
+
+Creates or updates an application/opportunity and can optionally create or update its linked deadline.
+
+Application identity is based on:
 
 ```text
-application_id, company, role, applied, applied_date, status, notes, updated_at
+company + role
 ```
 
-`Deadlines` columns:
+Therefore, logging the same company and role again updates the existing application instead of creating a duplicate.
+
+## Google Sheets Tracker
+
+Create one Google Spreadsheet and share it with the Google service-account email as an **Editor**.
+
+The application automatically creates the required tabs and header rows if they do not already exist.
+
+### Applications
 
 ```text
-deadline_id, application_id, company, role, stage, deadline_date,
-deadline_time, status, source, notes
+application_id
+company
+role
+applied
+applied_date
+status
+notes
+updated_at
 ```
 
-Application identity is `company + role`, so logging the same application later updates it instead of creating a duplicate. Deadline rows retain their own IDs and link to the application ID. Google Sheets—not SQLite—is the only active persistent tracker.
+### Deadlines
+
+```text
+deadline_id
+application_id
+company
+role
+stage
+deadline_date
+deadline_time
+status
+source
+notes
+```
+
+Google Sheets is the only active persistent storage layer. There is no SQLite database used for placement tracking.
+
+## Date Handling
+
+The agent resolves relative dates such as:
+
+```text
+today
+tomorrow
+next Monday
+```
+
+against the actual system date.
+
+An announcement is stored as `Not Applied` only when enough structured information is available.
+
+The system never assumes that a student applied simply because an opportunity was mentioned.
 
 ## Setup
 
-1. Use Python 3.11+ and create a virtual environment.
+### 1. Create a virtual environment
 
-   ```powershell
-   py -3.11 -m venv .venv
-   .\.venv\Scripts\Activate.ps1
-   pip install -r requirements.txt
-   ```
+Python 3.11+ is recommended.
 
-2. Install Ollama and pull the configured models.
+```bash
+py -3.11 -m venv .venv
+```
 
-   ```powershell
-   ollama pull llama3.2:3b
-   ollama pull llama3.2-vision:11b
-   ```
+Activate it on Windows:
 
-   You may instead set `OLLAMA_MODEL=gpt-oss:20b` after pulling that model. The vision model is only required for image attachments; PDFs are read locally.
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
 
-3. In Google Cloud, enable the Google Sheets API, create a service account, download its JSON key to `credentials/service_account.json`, and share the placement spreadsheet with the service account's email address.
+Install dependencies:
 
-4. Copy `.env.example` to `.env` and set its values:
+```bash
+pip install -r requirements.txt
+```
 
-   ```dotenv
-   LLM_PROVIDER=ollama
-   OLLAMA_MODEL=llama3.2:3b
-   OLLAMA_VISION_MODEL=llama3.2-vision:11b
-   TAVILY_API_KEY=your_tavily_api_key
-   TAVILY_MAX_RESULTS=5
-   GOOGLE_SHEET_ID=your_google_sheet_id
-   GOOGLE_CREDENTIALS_FILE=credentials/service_account.json
-   PLACEMENT_API_URL=http://127.0.0.1:8000
-   ```
+### 2. Install Ollama
 
-   Tavily is optional unless company research is used. Ollama is local and does not need an API key.
+Install Ollama and pull the configured models:
 
-5. Run the backend and frontend in separate terminals.
+```bash
+ollama pull llama3.2:3b
+ollama pull llama3.2-vision:11b
+```
 
-   ```powershell
-   uvicorn backend.main:app --reload
-   streamlit run frontend/app.py
-   ```
+You may alternatively use:
 
-Open `http://127.0.0.1:8501`. `GET /health`, `GET /applications`, `GET /deadlines`, and `POST /chat` are available from FastAPI.
+```text
+OLLAMA_MODEL=gpt-oss:20b
+```
 
-## Example conversations
+after pulling that model.
 
-- “Any deadlines coming up this week?” — reads the Google Sheets deadlines.
-- “What is TCS's interview process like?” — uses Tavily research and returns sourced, non-guaranteed reports.
-- “Draft a follow-up email to the Infosys recruiter. It has been two weeks.” — returns a draft with address placeholders; it does not send it.
-- “I just applied to Wipro for Project Engineer today.” — upserts the Sheets application with the actual date.
-- “I applied to Wipro for Project Engineer today. The assessment deadline is October 3.” — updates the application and creates/updates a linked assessment deadline.
-- Paste a resume or job description PDF/image and ask for role-fit, resume improvements, or interview preparation.
+The vision model is only required when processing image attachments. PDFs are processed locally.
 
-If the role is missing from an application report, the assistant asks for it rather than writing an incomplete record. If no personal deadline exists, it reports that no tracker record exists; it does not search the web to fabricate one.
+### 3. Configure Google Sheets
+
+In Google Cloud:
+
+1. Enable the **Google Sheets API**.
+2. Create a service account.
+3. Download its JSON credentials.
+4. Save the credentials as:
+
+```text
+credentials/service_account.json
+```
+
+5. Create a Google Spreadsheet.
+6. Share the spreadsheet with the service-account email as an **Editor**.
+
+Never commit the service-account JSON file.
+
+### 4. Configure environment variables
+
+Copy:
+
+```text
+.env.example
+```
+
+to:
+
+```text
+.env
+```
+
+Then configure:
+
+```env
+LLM_PROVIDER=ollama
+OLLAMA_MODEL=llama3.2:3b
+OLLAMA_VISION_MODEL=llama3.2-vision:11b
+
+TAVILY_API_KEY=your_tavily_api_key
+TAVILY_MAX_RESULTS=5
+
+GOOGLE_SHEET_ID=your_google_sheet_id
+GOOGLE_CREDENTIALS_FILE=credentials/service_account.json
+
+PLACEMENT_API_URL=http://127.0.0.1:8000
+```
+
+Tavily is optional unless company research is used.
+
+Ollama runs locally and does not require an API key.
+
+**Do not commit `.env`, API keys, or Google service-account credentials.**
+
+### 5. Run the application
+
+Start the backend:
+
+```bash
+uvicorn backend.main:app --reload
+```
+
+In a separate terminal, start Streamlit:
+
+```bash
+streamlit run frontend/app.py
+```
+
+Open:
+
+```text
+http://127.0.0.1:8501
+```
+
+## API Endpoints
+
+The FastAPI backend exposes:
+
+| Endpoint            | Purpose                               |
+| ------------------- | ------------------------------------- |
+| `GET /health`       | Check backend health                  |
+| `GET /applications` | Retrieve tracked applications         |
+| `GET /deadlines`    | Retrieve tracked deadlines            |
+| `POST /chat`        | Send a message to the placement agent |
+
+FastAPI also provides its standard interactive API documentation when the backend is running.
+
+## Example Conversations
+
+### Deadline tracking
+
+> "Any deadlines coming up this week?"
+
+The agent reads the Google Sheets deadline tracker.
+
+### Company research
+
+> "What is TCS's interview process like?"
+
+The agent uses Tavily to retrieve current web reports and returns them as sourced, non-guaranteed information.
+
+### Email drafting
+
+> "Draft a follow-up email to the Infosys recruiter. It has been two weeks."
+
+The agent creates an editable draft with address placeholders.
+
+It does not send the email.
+
+### Application tracking
+
+> "I just applied to Wipro for Project Engineer today."
+
+The agent creates or updates the application using the actual current date.
+
+### Application + deadline
+
+> "I applied to Wipro for Project Engineer today. The assessment deadline is October 3."
+
+The agent updates the application and creates or updates the linked assessment deadline.
+
+### Resume / Job Description
+
+A user can upload a resume or job-description PDF/image and ask for:
+
+* Role-fit analysis
+* Resume improvement suggestions
+* Interview preparation
+* Relevant skills or gaps
+
+If the role is missing from an application record, the assistant asks for it rather than creating an incomplete record.
+
+If no personal deadline exists in the tracker, the assistant reports that no tracker record exists instead of searching the web and fabricating a deadline.
+
+## Project Structure
+
+```text
+placement-agent/
+│
+├── backend/
+│   ├── agent.py
+│   ├── main.py
+│   └── sheets.py
+│
+├── frontend/
+│   └── app.py
+│
+├── tests/
+│
+├── credentials/
+│   └── service_account.json   # ignored by Git
+│
+├── .env.example
+├── .gitignore
+├── requirements.txt
+└── README.md
+```
 
 ## Tests
 
-Run the offline tests (they use a fake Sheets client, not your real spreadsheet):
+Run the offline test suite:
 
-```powershell
+```bash
 python -m unittest discover -s tests -v
 ```
 
-They cover application creation/update and duplicate prevention, linked deadlines, deadline filters, invalid dates, relative dates, and announcement records that are not applications.
+The tests use a fake Sheets client and do not modify the real Google Spreadsheet.
+
+The test suite covers:
+
+* Application creation
+* Application updates
+* Duplicate prevention
+* Linked deadlines
+* Deadline filtering
+* Invalid dates
+* Relative dates
+* Announcement records that are not applications
 
 ## Security
 
-`.env` and `credentials/` are ignored by Git. Never commit the Google service-account JSON, the Google Sheet ID if it is sensitive, or Tavily keys. The frontend only talks to FastAPI and never receives credentials. There is no Gmail API or email sending in this project.
+The project follows a local-first approach for LLM inference and separates personal tracker storage from external company research.
+
+* `.env` is ignored by Git.
+* `credentials/` is ignored by Git.
+* Google service-account credentials must never be committed.
+* API keys must never be committed.
+* The frontend communicates with the backend rather than directly accessing credentials.
+* Google Sheets is the only persistent placement-tracker storage.
+* There is no Gmail API integration.
+* The application does not send emails automatically.
+* Tavily is used for company research, not for personal placement records.
+
+## Limitations
+
+* Company interview-process information from the web may be incomplete, outdated, or anecdotal.
+* Tavily research should not be treated as an official company hiring policy.
+* The application tracker depends on access to the configured Google Spreadsheet.
+* Ollama models must be installed locally.
+* Email generation produces drafts only; users are responsible for reviewing and sending them.
+
+## License
+
+Add your preferred open-source license here, for example MIT, if you intend to distribute the project under that license.
